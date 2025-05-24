@@ -69,7 +69,9 @@ class PostService:
                 del cache[cache_key]
                 print(f"Cache invalidated for user: {user_id}", file=sys.stderr)
 
-            return PostOut.model_validate(post) # Use model_validate for Pydantic v2+
+            # return PostOut.model_validate(post) # Use model_validate for Pydantic v2+
+            # Explicitly return a dictionary conforming to PostOut schema
+            return PostOut(id=post.id, user_id=post.user_id, text=post.text, created_at=post.created_at)
 
         except HTTPException as e:
             print(f"Caught HTTPException during add_post: {e.detail}", file=sys.stderr)
@@ -118,7 +120,7 @@ class PostService:
             posts = self.db.query(Post).filter(Post.user_id == user_id).order_by(Post.created_at.desc()).all()
             
             # Convert SQLAlchemy models to Pydantic models for caching and return
-            post_list = [PostOut.model_validate(post) for post in posts]
+            post_list = [PostOut(id=post.id, user_id=post.user_id, text=post.text, created_at=post.created_at) for post in posts]
             
             # Cache the result for 5 minutes (300 seconds)
             cache[cache_key] = post_list # Corrected: Use dictionary assignment

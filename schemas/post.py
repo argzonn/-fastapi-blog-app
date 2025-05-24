@@ -32,4 +32,5 @@ class PostOut(PostBase):
     class Config:
         # This setting tells Pydantic to read data from SQLAlchemy models
         # by attribute name (e.g., post.id) instead of just by key (e.g., {'id': ...})
-        from_attributes = True 
+        # from_attributes = True
+        pass # Removed from_attributes for explicit dictionary validation 
