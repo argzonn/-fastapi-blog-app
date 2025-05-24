@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from db import get_db
+# from db import get_db # Comment out database import
 from models.post import Post
 from schemas.post import PostCreate, PostOut
 from auth import get_current_user
@@ -10,29 +10,36 @@ import jwt
 from datetime import datetime, timedelta
 import sys
 
+# In-memory storage for posts and a counter for generating IDs
+_in_memory_posts = []
+_next_post_id = 1
+
 class PostService:
     """
-    Handles post-related business logic, including creating, retrieving, and deleting posts.
-    Interacts with the database and implements caching for retrieving posts.
+    Handles post-related business logic using in-memory storage.
     """
+    # Remove or comment out database session initialization
+    # def __init__(self):
+    #     """
+    #     Initializes the PostService with a database session.
+    #     """
+    #     # Get a new database session for each service instance
+    #     try:
+    #         self.db = next(get_db())
+    #         print("Database session obtained successfully for PostService.", file=sys.stderr)
+    #     except Exception as e:
+    #         print(f"Error getting database session for PostService: {e}", file=sys.stderr)
+    #         raise HTTPException(status_code=500, detail="Database connection error") from e
+    
+    # Simple __init__ for in-memory version
     def __init__(self):
-        """
-        Initializes the PostService with a database session.
-        """
-        # Get a new database session for each service instance
-        try:
-            self.db = next(get_db())
-            print("Database session obtained successfully for PostService.", file=sys.stderr)
-        except Exception as e:
-            print(f"Error getting database session for PostService: {e}", file=sys.stderr)
-            raise HTTPException(status_code=500, detail="Database connection error") from e
+        pass # No database session needed for in-memory storage
 
     async def add_post(self, post_data: PostCreate, token: str) -> PostOut:
         """
-        Creates a new post for the authenticated user.
+        Creates a new post for the authenticated user in memory.
 
-        Validates the post text size, creates the post in the database,
-        and invalidates the cache for the user's posts.
+        Validates the post text size and adds the post to in-memory storage.
 
         Args:
             post_data (PostCreate): The post data (text).
@@ -42,10 +49,10 @@ class PostService:
             PostOut: The created post's details.
 
         Raises:
-            HTTPException: If the token is invalid (401), if the post content is too large (400),
-                           or if there's an unexpected database error (500).
+            HTTPException: If the token is invalid (401), if the post content is too large (400).
         """
-        print("Attempting to add post...", file=sys.stderr)
+        print("Attempting to add post (in-memory)...", file=sys.stderr)
+        global _next_post_id, _in_memory_posts
         try:
             user_id = get_current_user(token)
             print(f"User ID from token: {user_id}", file=sys.stderr)
@@ -54,41 +61,42 @@ class PostService:
             if len(post_data.text) > 1000000: # Example size limit matching VARCHAR(1000000) or TEXT
                  raise HTTPException(status_code=400, detail="Post content too large")
 
-            post = Post(user_id=user_id, text=post_data.text)
-            print("Post object created.", file=sys.stderr)
-            self.db.add(post)
-            print("Post added to session. Committing...", file=sys.stderr)
-            self.db.commit()
-            print("Commit successful. Refreshing post object...", file=sys.stderr)
-            self.db.refresh(post)
-            print(f"Post object refreshed. Post ID: {post.id}", file=sys.stderr)
+            # Create in-memory post object
+            new_post = {
+                "id": _next_post_id,
+                "user_id": user_id,
+                "text": post_data.text,
+                "created_at": datetime.now()
+            }
+            _in_memory_posts.append(new_post)
+            post_id = _next_post_id
+            _next_post_id += 1
+            
+            print(f"Post added to in-memory storage. Post ID: {post_id}", file=sys.stderr)
 
-            # Invalidate cache for this user's posts after adding a new post
+            # Invalidate cache for this user's posts after adding a new post (if caching is still desired for in-memory)
             cache_key = f"user_posts:{user_id}"
             if cache_key in cache:
                 del cache[cache_key]
                 print(f"Cache invalidated for user: {user_id}", file=sys.stderr)
 
-            # return PostOut.model_validate(post) # Use model_validate for Pydantic v2+
-            # Explicitly return a dictionary conforming to PostOut schema
-            return PostOut(id=post.id, user_id=post.user_id, text=post.text, created_at=post.created_at)
+            # Return the created post details
+            return PostOut(id=new_post["id"], user_id=new_post["user_id"], text=new_post["text"], created_at=new_post["created_at"])
 
         except HTTPException as e:
-            print(f"Caught HTTPException during add_post: {e.detail}", file=sys.stderr)
-            self.db.rollback()
+            print(f"Caught HTTPException during add_post (in-memory): {e.detail}", file=sys.stderr)
             raise e
         except Exception as e:
-            print(f"Caught unexpected exception during add_post: {e}", file=sys.stderr)
+            print(f"Caught unexpected exception during add_post (in-memory): {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
-            self.db.rollback()
             raise HTTPException(status_code=500, detail="Internal Server Error during add_post") from e
 
     async def get_posts(self, token: str) -> list[PostOut]:
         """
-        Retrieves all posts for the authenticated user.
+        Retrieves all posts for the authenticated user from in-memory storage.
 
-        Checks the cache first, and if not found, fetches from the database,
+        Checks the cache first, and if not found, fetches from in-memory storage,
         caches the result, and returns the posts.
 
         Args:
@@ -99,9 +107,9 @@ class PostService:
 
         Raises:
             HTTPException: If the token is invalid (401),
-                           or if there's an unexpected database or cache error (500).
+                           or if there's an unexpected error (500).
         """
-        print("Attempting to get posts...", file=sys.stderr)
+        print("Attempting to get posts (in-memory)...", file=sys.stderr)
         try:
             user_id = get_current_user(token)
             print(f"User ID from token for getting posts: {user_id}", file=sys.stderr)
@@ -114,36 +122,36 @@ class PostService:
                 print(f"Returning posts from cache for user: {user_id}", file=sys.stderr)
                 return post_list
 
-            print(f"Fetching posts from database for user: {user_id}", file=sys.stderr)
-            # If not in cache, get posts from the database
-            # Order by creation date descending
-            posts = self.db.query(Post).filter(Post.user_id == user_id).order_by(Post.created_at.desc()).all()
+            print(f"Fetching posts from in-memory storage for user: {user_id}", file=sys.stderr)
+            # Filter posts from in-memory storage for the current user
+            user_posts = [post for post in _in_memory_posts if post["user_id"] == user_id]
             
-            # Convert SQLAlchemy models to Pydantic models for caching and return
-            post_list = [PostOut(id=post.id, user_id=post.user_id, text=post.text, created_at=post.created_at) for post in posts]
+            # Order by creation date descending
+            user_posts.sort(key=lambda x: x["created_at"], reverse=True)
+            
+            # Convert in-memory dicts to Pydantic models for caching and return
+            post_list = [PostOut(id=post["id"], user_id=post["user_id"], text=post["text"], created_at=post["created_at"]) for post in user_posts]
             
             # Cache the result for 5 minutes (300 seconds)
-            cache[cache_key] = post_list # Corrected: Use dictionary assignment
+            cache[cache_key] = post_list # Use dictionary assignment
             print(f"Cached posts for user: {user_id}", file=sys.stderr)
 
             return post_list
 
         except HTTPException as e:
-            print(f"Caught HTTPException during get_posts: {e.detail}", file=sys.stderr)
-            self.db.rollback()
+            print(f"Caught HTTPException during get_posts (in-memory): {e.detail}", file=sys.stderr)
             raise e
         except Exception as e:
-            print(f"Caught unexpected exception during get_posts: {e}", file=sys.stderr)
+            print(f"Caught unexpected exception during get_posts (in-memory): {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
-            self.db.rollback()
             raise HTTPException(status_code=500, detail="Internal Server Error during get_posts") from e
 
     async def delete_post(self, post_id: int, token: str):
         """
-        Deletes a post for the authenticated user.
+        Deletes a post for the authenticated user from in-memory storage.
 
-        Deletes the post from the database and invalidates the cache
+        Deletes the post from in-memory storage and invalidates the cache
         for the user's posts.
 
         Args:
@@ -155,23 +163,27 @@ class PostService:
 
         Raises:
             HTTPException: If the token is invalid (401), if the post is not found
-                           or doesn't belong to the user (404), or if there's an
-                           unexpected database error (500).
+                           or doesn't belong to the user (404).
         """
-        print(f"Attempting to delete post with ID: {post_id}...", file=sys.stderr)
+        print(f"Attempting to delete post with ID: {post_id} (in-memory)...", file=sys.stderr)
+        global _in_memory_posts
         try:
             user_id = get_current_user(token)
             print(f"User ID from token for deleting post: {user_id}", file=sys.stderr)
 
-            post = self.db.query(Post).filter(Post.id == post_id, Post.user_id == user_id).first()
-            if not post:
-                print(f"Post with ID {post_id} not found for user {user_id}.", file=sys.stderr)
+            # Find the post in in-memory storage
+            post_to_delete = None
+            for i, post in enumerate(_in_memory_posts):
+                if post["id"] == post_id and post["user_id"] == user_id:
+                    post_to_delete = post
+                    del _in_memory_posts[i]
+                    break
+
+            if not post_to_delete:
+                print(f"Post with ID {post_id} not found for user {user_id} (in-memory).", file=sys.stderr)
                 raise HTTPException(status_code=404, detail="Post not found")
 
-            self.db.delete(post)
-            print(f"Post with ID {post_id} marked for deletion. Committing...", file=sys.stderr)
-            self.db.commit()
-            print("Commit successful.", file=sys.stderr)
+            print(f"Post with ID {post_id} deleted from in-memory storage.", file=sys.stderr)
 
             # Invalidate cache for this user's posts after deletion
             cache_key = f"user_posts:{user_id}"
@@ -182,12 +194,10 @@ class PostService:
             return {"message": "Post deleted successfully"}
 
         except HTTPException as e:
-            print(f"Caught HTTPException during delete_post: {e.detail}", file=sys.stderr)
-            self.db.rollback()
+            print(f"Caught HTTPException during delete_post (in-memory): {e.detail}", file=sys.stderr)
             raise e
         except Exception as e:
-            print(f"Caught unexpected exception during delete_post: {e}", file=sys.stderr)
+            print(f"Caught unexpected exception during delete_post (in-memory): {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
-            self.db.rollback()
             raise HTTPException(status_code=500, detail="Internal Server Error during delete_post") from e 
